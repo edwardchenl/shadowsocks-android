@@ -3,8 +3,11 @@ import java.util.regex.Matcher
 import java.util.regex.Pattern
 
 apply plugin: 'com.android.application'
+apply plugin: 'com.google.android.gms.oss-licenses-plugin'
+apply plugin: 'com.google.gms.google-services'
+apply plugin: 'io.fabric'
 apply plugin: 'kotlin-android'
-apply plugin: 'kotlin-kapt'
+apply plugin: 'kotlin-android-extensions'
 
 def getCurrentFlavor() {
     String task = getGradle().getStartParameter().getTaskRequests().toString()
@@ -16,83 +19,69 @@ def getCurrentFlavor() {
 }
 
 android {
-    buildToolsVersion rootProject.buildToolsVersion
     compileSdkVersion rootProject.compileSdkVersion
     defaultConfig {
         applicationId "com.github.shadowsocks"
         minSdkVersion rootProject.minSdkVersion
         targetSdkVersion rootProject.sdkVersion
-        versionCode 4060000
-        versionName "4.6.0"
-        testApplicationId "com.github.shadowsocks.test"
-        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
-        resConfigs "fa", "fr", "ja", "ko", "ru", "zh-rCN", "zh-rTW"
-        javaCompileOptions {
-            annotationProcessorOptions {
-                arguments = ["room.schemaLocation": "$projectDir/schemas".toString()]
-            }
-        }
+        versionCode rootProject.versionCode
+        versionName rootProject.versionName
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        resConfigs rootProject.resConfigs
     }
     buildTypes {
         debug {
-            multiDexEnabled true
             pseudoLocalesEnabled true
         }
         release {
             shrinkResources true
             minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android.txt')
         }
     }
-    lintOptions.checkReleaseBuilds false
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility javaVersion
+        targetCompatibility javaVersion
+    }
+    kotlinOptions.jvmTarget = javaVersion
+    packagingOptions.exclude '**/*.kotlin_*'
     splits {
         abi {
             enable true
-            reset()
-            include 'armeabi-v7a', 'arm64-v8a', 'x86'
             universalApk true
         }
     }
     sourceSets.main.jniLibs.srcDirs +=
             new File(project(':core').buildDir, "intermediates/bundles/${getCurrentFlavor()}/jni")
-    sourceSets.main.jniLibs.srcDirs += new File(project(':core').projectDir, "src/overture/bin")
+}
+
+androidExtensions {
+    experimental = true
 }
 
 dependencies {
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:$desugarLibsVersion"
     implementation project(':core')
-    implementation "android.arch.persistence.room:runtime:$roomVersion"
-    implementation "com.android.support:customtabs:$supportLibraryVersion"
-    implementation "com.android.support:design:$supportLibraryVersion"
-    implementation "com.android.support:gridlayout-v7:$supportLibraryVersion"
-    implementation "com.android.support:support-v4:$supportLibraryVersion"
-    implementation 'com.futuremind.recyclerfastscroll:fastscroll:0.2.5'
-    implementation 'com.evernote:android-job:1.2.6'
-    implementation "com.google.android.gms:play-services-ads:15.0.1"
-    implementation "com.google.android.gms:play-services-analytics:16.0.0"
-    implementation "com.google.android.gms:play-services-vision:15.0.2"
-    implementation "com.google.firebase:firebase-config:16.0.0"
-    implementation 'com.google.firebase:firebase-core:16.0.0'
-    implementation 'com.mikepenz:materialdrawer:6.0.7'
-    implementation 'com.squareup.okhttp3:okhttp:3.10.0'
-    implementation "com.takisoft.fix:preference-v7-simplemenu:$takisoftFixVersion"
-    implementation 'com.twofortyfouram:android-plugin-api-for-locale:1.0.2'
-    implementation 'eu.chainfire:libsuperuser:1.0.0.201704021214'
-    implementation 'net.glxn.qrgen:android:2.0'
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlinVersion"
+    implementation 'androidx.browser:browser:1.2.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.0.0-beta4'
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:$lifecycleVersion"
+    implementation 'com.google.android.gms:play-services-vision:19.0.0'
+    implementation 'com.google.firebase:firebase-ads:18.3.0'
+    implementation 'com.google.zxing:core:3.4.0'
+    implementation 'com.takisoft.preferencex:preferencex-simplemenu:1.1.0'
+    implementation 'com.twofortyfouram:android-plugin-api-for-locale:1.0.4'
+    implementation 'me.zhanghai.android.fastscroll:library:1.1.0'
     implementation 'xyz.belvi.mobilevision:barcodescanner:2.0.3'
-    kapt "android.arch.persistence.room:compiler:$roomVersion"
-    testImplementation "android.arch.persistence.room:testing:$roomVersion"
     testImplementation "junit:junit:$junitVersion"
-    androidTestImplementation "com.android.support.test:runner:$androidTestVersion"
-    androidTestImplementation "com.android.support.test.espresso:espresso-core:$androidEspressoVersion"
+    androidTestImplementation "androidx.test:runner:$androidTestVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidEspressoVersion"
 }
 repositories {
     mavenCentral()
 }
 
-apply plugin: 'com.google.gms.google-services'
-
-ext.abiCodes = ['armeabi-v7a': 1, 'arm64-v8a': 2, x86: 3]
+ext.abiCodes = ['armeabi-v7a': 1, 'arm64-v8a': 2, x86: 3, x86_64: 4]
 if (getCurrentFlavor() == 'release') android.applicationVariants.all { variant ->
     variant.outputs.each { output ->
         def offset = project.ext.abiCodes.get(output.getFilter(OutputFile.ABI))

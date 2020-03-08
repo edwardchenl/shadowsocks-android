@@ -1,173 +1,112 @@
-#define LOG_TAG "JniHelper"
+/*******************************************************************************
+ *                                                                             *
+ *  Copyright (C) 2019 by Max Lv <max.c.lv@gmail.com>                          *
+ *  Copyright (C) 2019 by Mygod Studio <contact-shadowsocks-android@mygod.be>  *
+ *                                                                             *
+ *  This program is free software: you can redistribute it and/or modify       *
+ *  it under the terms of the GNU General Public License as published by       *
+ *  the Free Software Foundation, either version 3 of the License, or          *
+ *  (at your option) any later version.                                        *
+ *                                                                             *
+ *  This program is distributed in the hope that it will be useful,            *
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of             *
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the              *
+ *  GNU General Public License for more details.                               *
+ *                                                                             *
+ *  You should have received a copy of the GNU General Public License          *
+ *  along with this program. If not, see <http://www.gnu.org/licenses/>.       *
+ *                                                                             *
+ *******************************************************************************/
+
+#include <sstream>
 
 #include "jni.h"
-#include <android/log.h>
-#include <sys/system_properties.h>
-
-#include <algorithm>
-#include <cerrno>
-#include <csignal>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <sys/un.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <ancillary.h>
+#include "re2/re2.h"
 
 using namespace std;
 
-#define LOGI(...) do { __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__); } while(0)
-#define LOGW(...) do { __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__); } while(0)
-#define LOGE(...) do { __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__); } while(0)
-#define THROW(env, clazz, msg) do { env->ThrowNew(env->FindClass(clazz), msg); } while (0)
+struct AclMatcher {
+    stringstream bypassDomainsBuilder, proxyDomainsBuilder;
+    RE2 *bypassDomains, *proxyDomains;
 
-static int sdk_version;
-static jclass ProcessImpl;
-static jfieldID ProcessImpl_pid, ProcessImpl_exitValue, ProcessImpl_exitValueMutex;
+    ~AclMatcher() {
+        if (bypassDomains) delete bypassDomains;
+        if (proxyDomains) delete proxyDomains;
+    }
+};
 
+bool addDomain(JNIEnv *env, stringstream &domains, jstring regex) {
+    const char *regexChars = env->GetStringUTFChars(regex, nullptr);
+    if (regexChars == nullptr) return false;
+    if (domains.rdbuf()->in_avail()) domains << '|';
+    domains << regexChars;
+    env->ReleaseStringUTFChars(regex, regexChars);
+    return true;
+}
+
+const char *buildRE2(stringstream &domains, RE2 *&out, const RE2::Options &options) {
+    if (domains.rdbuf()->in_avail()) {
+        out = new RE2(domains.str(), options);
+        domains.clear();
+        if (!out->ok()) return out->error().c_str();
+    } else {
+        delete out;
+        out = nullptr;
+    }
+    return nullptr;
+}
+
+#pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
 extern "C" {
-JNIEXPORT jint JNICALL Java_com_github_shadowsocks_JniHelper_sigkill(JNIEnv *env, jobject thiz, jint pid) {
-    // Suppress "No such process" errors. We just want the process killed. It's fine if it's already killed.
-    return kill(pid, SIGKILL) == -1 && errno != ESRCH ? errno : 0;
+JNIEXPORT jlong JNICALL Java_com_github_shadowsocks_acl_AclMatcher_init(JNIEnv *env, jclass clazz) {
+    return reinterpret_cast<jlong>(new AclMatcher());
 }
 
-JNIEXPORT jint JNICALL Java_com_github_shadowsocks_JniHelper_sigterm(JNIEnv *env, jobject thiz, jobject process) {
-    if (!env->IsInstanceOf(process, ProcessImpl)) {
-        THROW(env, "java/lang/ClassCastException",
-                   "Unsupported process object. Only java.lang.ProcessManager$ProcessImpl is accepted.");
-        return -1;
-    }
-    jint pid = env->GetIntField(process, ProcessImpl_pid);
-    // Suppress "No such process" errors. We just want the process killed. It's fine if it's already killed.
-    return kill(pid, SIGTERM) == -1 && errno != ESRCH ? errno : 0;
+JNIEXPORT void JNICALL
+Java_com_github_shadowsocks_acl_AclMatcher_close(JNIEnv *env, jclass clazz, jlong handle) {
+    delete reinterpret_cast<AclMatcher *>(handle);
 }
 
-JNIEXPORT jobject JNICALL
-        Java_com_github_shadowsocks_JniHelper_getExitValue(JNIEnv *env, jobject thiz, jobject process) {
-    if (!env->IsInstanceOf(process, ProcessImpl)) {
-        THROW(env, "java/lang/ClassCastException",
-                   "Unsupported process object. Only java.lang.ProcessManager$ProcessImpl is accepted.");
-        return NULL;
-    }
-    return env->GetObjectField(process, ProcessImpl_exitValue);
+JNIEXPORT jboolean JNICALL
+Java_com_github_shadowsocks_acl_AclMatcher_addBypassDomain(JNIEnv *env, jclass clazz, jlong handle,
+                                                           jstring regex) {
+    return static_cast<jboolean>(handle &&
+                                 ::addDomain(env, reinterpret_cast<AclMatcher *>(handle)->bypassDomainsBuilder, regex));
 }
 
-JNIEXPORT jobject JNICALL
-        Java_com_github_shadowsocks_JniHelper_getExitValueMutex(JNIEnv *env, jobject thiz, jobject process) {
-    if (!env->IsInstanceOf(process, ProcessImpl)) {
-        THROW(env, "java/lang/ClassCastException",
-                   "Unsupported process object. Only java.lang.ProcessManager$ProcessImpl is accepted.");
-        return NULL;
-    }
-    return env->GetObjectField(process, ProcessImpl_exitValueMutex);
+JNIEXPORT jboolean JNICALL
+Java_com_github_shadowsocks_acl_AclMatcher_addProxyDomain(JNIEnv *env, jclass clazz, jlong handle,
+                                                          jstring regex) {
+    return static_cast<jboolean>(handle &&
+                                 ::addDomain(env, reinterpret_cast<AclMatcher *>(handle)->proxyDomainsBuilder, regex));
 }
 
-JNIEXPORT void JNICALL Java_com_github_shadowsocks_JniHelper_close(JNIEnv *env, jobject thiz, jint fd) {
-    close(fd);
+JNIEXPORT jstring JNICALL
+Java_com_github_shadowsocks_acl_AclMatcher_build(JNIEnv *env, jclass clazz, jlong handle,
+                                                 jlong memory_limit) {
+    if (!handle) return env->NewStringUTF("AclMatcher closed");
+    auto matcher = reinterpret_cast<AclMatcher *>(handle);
+    RE2::Options options;
+    options.set_max_mem(memory_limit);
+    options.set_never_capture(true);
+    const char *e = ::buildRE2(matcher->bypassDomainsBuilder, matcher->bypassDomains, options);
+    if (e) return env->NewStringUTF(e);
+    e = ::buildRE2(matcher->proxyDomainsBuilder, matcher->proxyDomains, options);
+    if (e) return env->NewStringUTF(e);
+    return nullptr;
 }
 
 JNIEXPORT jint JNICALL
-        Java_com_github_shadowsocks_JniHelper_sendFd(JNIEnv *env, jobject thiz, jint tun_fd, jstring path) {
-    int fd;
-    struct sockaddr_un addr;
-    const char *sock_str  = env->GetStringUTFChars(path, 0);
-
-    if ( (fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1) {
-        LOGE("socket() failed: %s (socket fd = %d)\n", strerror(errno), fd);
-        return (jint)-1;
-    }
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, sock_str, sizeof(addr.sun_path)-1);
-
-    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        LOGE("connect() failed: %s (fd = %d)\n", strerror(errno), fd);
-        close(fd);
-        return (jint)-1;
-    }
-
-    if (ancil_send_fd(fd, tun_fd)) {
-        LOGE("ancil_send_fd: %s", strerror(errno));
-        close(fd);
-        return (jint)-1;
-    }
-
-    close(fd);
-    env->ReleaseStringUTFChars(path, sock_str);
-    return 0;
-}
-
-JNIEXPORT jbyteArray JNICALL
-Java_com_github_shadowsocks_JniHelper_parseNumericAddress(JNIEnv *env, jobject thiz, jstring str) {
-    const char *src = env->GetStringUTFChars(str, 0);
-    jbyte dst[max(sizeof(in_addr), sizeof(in6_addr))];
-    jbyteArray arr = nullptr;
-    if (inet_pton(AF_INET, src, dst) == 1) {
-        arr = env->NewByteArray(sizeof(in_addr));
-        env->SetByteArrayRegion(arr, 0, sizeof(in_addr), dst);
-    } else if (inet_pton(AF_INET6, src, dst) == 1) {
-        arr = env->NewByteArray(sizeof(in6_addr));
-        env->SetByteArrayRegion(arr, 0, sizeof(in6_addr), dst);
-    }
-    env->ReleaseStringUTFChars(str, src);
-    return arr;
-}
-}
-
-/*
- * This is called by the VM when the shared library is first loaded.
- */
-
-typedef union {
-    JNIEnv* env;
-    void* venv;
-} UnionJNIEnvToVoid;
-
-#pragma ide diagnostic ignored "OCUnusedGlobalDeclarationInspection"
-jint JNI_OnLoad(JavaVM* vm, void* reserved) {
-    UnionJNIEnvToVoid uenv;
-    uenv.venv = NULL;
-    jint result = -1;
-    JNIEnv* env = NULL;
-
-    if (vm->GetEnv(&uenv.venv, JNI_VERSION_1_6) != JNI_OK) {
-        THROW(env, "java/lang/RuntimeException", "GetEnv failed");
-        goto bail;
-    }
-    env = uenv.env;
-
-    char version[PROP_VALUE_MAX + 1];
-    __system_property_get("ro.build.version.sdk", version);
-    sdk_version = atoi(version);
-
-#define FIND_CLASS(out, name)                                                           \
-    if (!(out = env->FindClass(name))) {                                                \
-        THROW(env, "java/lang/RuntimeException", name " not found");                    \
-        goto bail;                                                                      \
-    }                                                                                   \
-    out = reinterpret_cast<jclass>(env->NewGlobalRef(reinterpret_cast<jobject>(out)))
-#define GET_FIELD(out, clazz, name, sig)                                                                    \
-    if (!(out = env->GetFieldID(clazz, name, sig))) {                                                       \
-        THROW(env, "java/lang/RuntimeException", "Field " #clazz "." name " with type " sig " not found");  \
-        goto bail;                                                                                          \
-    }
-
-    if (sdk_version < 24) {
-        FIND_CLASS(ProcessImpl, "java/lang/ProcessManager$ProcessImpl");
-        GET_FIELD(ProcessImpl_pid, ProcessImpl, "pid", "I")
-        GET_FIELD(ProcessImpl_exitValue, ProcessImpl, "exitValue", "Ljava/lang/Integer;")
-        GET_FIELD(ProcessImpl_exitValueMutex, ProcessImpl, "exitValueMutex", "Ljava/lang/Object;")
-    }
-
-    result = JNI_VERSION_1_6;
-
-bail:
+Java_com_github_shadowsocks_acl_AclMatcher_matchHost(JNIEnv *env, jclass clazz, jlong handle,
+                                                     jstring host) {
+    if (!handle) return -1;
+    auto matcher = reinterpret_cast<const AclMatcher *>(handle);
+    const char *hostChars = env->GetStringUTFChars(host, nullptr);
+    jint result = 0;
+    if (matcher->bypassDomains && RE2::PartialMatch(hostChars, *matcher->bypassDomains)) result = 1;
+    else if (matcher->proxyDomains && RE2::PartialMatch(hostChars, *matcher->proxyDomains)) result = 2;
+    env->ReleaseStringUTFChars(host, hostChars);
     return result;
+}
 }
